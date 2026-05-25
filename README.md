@@ -54,6 +54,30 @@ Set `AI_PROVIDER=mock` to run without an OpenAI key (tests use this automaticall
 
 ---
 
+## Screenshots
+
+### Dashboard — submit email & recent drafts
+
+![ZETA dashboard — new incoming email form and recent task drafts](public/images/1.png)
+
+### AI task draft — structured output from ChatGPT
+
+![AI task draft with type, priority, confidence, missing information, and source email](public/images/2.png)
+
+### Human review — approve or reject
+
+![Human review section with approve and reject actions](public/images/3.png)
+
+### Override fields — edit AI suggestion
+
+![Override fields form for type, priority, title, summary, project, and team](public/images/4.png)
+
+### Override reason — required when changing fields
+
+![Override reason and save override button](public/images/5.png)
+
+---
+
 ## Architecture
 
 Two HTTP surfaces share the same service layer. Controllers validate input and delegate; business rules live in services; AI is isolated behind an interface.
