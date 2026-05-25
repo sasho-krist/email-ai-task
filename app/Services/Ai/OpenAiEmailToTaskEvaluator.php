@@ -11,10 +11,25 @@ use App\Exceptions\AiEvaluationFailedException;
 use App\Exceptions\EmailTooVagueException;
 use App\Models\IncomingEmail;
 use Illuminate\Support\Facades\Http;
+use Throwable;
 
 class OpenAiEmailToTaskEvaluator implements EmailToTaskEvaluator
 {
     public function evaluate(IncomingEmail $email): AiEvaluationResult
+    {
+        try {
+            return $this->performEvaluation($email);
+        } catch (EmailTooVagueException|AiEvaluationFailedException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new AiEvaluationFailedException(
+                'OpenAI evaluation failed: '.$exception->getMessage(),
+                previous: $exception,
+            );
+        }
+    }
+
+    private function performEvaluation(IncomingEmail $email): AiEvaluationResult
     {
         $startedAt = microtime(true);
         $apiKey = config('ai.openai.api_key');
@@ -90,7 +105,7 @@ PROMPT;
 
         $parsed = json_decode($content, true);
 
-        if (! is_array($parsed)) {
+        if (json_last_error() !== JSON_ERROR_NONE || ! is_array($parsed)) {
             throw new AiEvaluationFailedException('OpenAI returned invalid JSON.');
         }
 

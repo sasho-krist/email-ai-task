@@ -11,6 +11,7 @@ use App\Exceptions\TaskDraftAlreadyProcessedException;
 use App\Models\ApprovalDecision;
 use App\Models\TaskDraft;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class TaskDraftReviewService
 {
@@ -30,28 +31,44 @@ class TaskDraftReviewService
 
     public function approve(TaskDraft $draft, string $operatorName, ?string $note = null): TaskDraft
     {
-        return $this->recordDecision(
-            draft: $draft,
-            action: ApprovalAction::Approved,
-            operatorName: $operatorName,
-            note: $note,
-            nextStatus: TaskDraftStatus::Approved,
-            overrideFields: null,
-            overrideReason: null,
-        );
+        try {
+            return DB::transaction(fn () => $this->applyDecision(
+                draft: $draft,
+                action: ApprovalAction::Approved,
+                operatorName: $operatorName,
+                note: $note,
+                nextStatus: TaskDraftStatus::Approved,
+                overrideFields: null,
+                overrideReason: null,
+            ));
+        } catch (TaskDraftAlreadyProcessedException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
+            throw $exception;
+        }
     }
 
     public function reject(TaskDraft $draft, string $operatorName, ?string $note = null): TaskDraft
     {
-        return $this->recordDecision(
-            draft: $draft,
-            action: ApprovalAction::Rejected,
-            operatorName: $operatorName,
-            note: $note,
-            nextStatus: TaskDraftStatus::Rejected,
-            overrideFields: null,
-            overrideReason: null,
-        );
+        try {
+            return DB::transaction(fn () => $this->applyDecision(
+                draft: $draft,
+                action: ApprovalAction::Rejected,
+                operatorName: $operatorName,
+                note: $note,
+                nextStatus: TaskDraftStatus::Rejected,
+                overrideFields: null,
+                overrideReason: null,
+            ));
+        } catch (TaskDraftAlreadyProcessedException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
+            throw $exception;
+        }
     }
 
     /**
@@ -59,36 +76,45 @@ class TaskDraftReviewService
      */
     public function override(TaskDraft $draft, string $operatorName, array $fields, ?string $overrideReason = null, ?string $note = null): TaskDraft
     {
-        $sanitizedFields = $this->sanitizeOverrideFields($fields);
+        try {
+            $sanitizedFields = $this->sanitizeOverrideFields($fields);
 
-        if ($sanitizedFields !== [] && blank($overrideReason)) {
-            throw new OverrideRequiresReasonException();
-        }
-
-        return DB::transaction(function () use ($draft, $operatorName, $sanitizedFields, $overrideReason, $note) {
-            $this->assertPendingReview($draft);
-
-            if ($sanitizedFields !== []) {
-                $draft->fill($this->castOverrideFields($sanitizedFields));
-                $draft->save();
+            if ($sanitizedFields !== [] && blank($overrideReason)) {
+                throw new OverrideRequiresReasonException();
             }
 
-            return $this->recordDecision(
-                draft: $draft,
-                action: ApprovalAction::Overridden,
-                operatorName: $operatorName,
-                note: $note,
-                nextStatus: TaskDraftStatus::Overridden,
-                overrideFields: $sanitizedFields !== [] ? $sanitizedFields : null,
-                overrideReason: $overrideReason,
-            );
-        });
+            return DB::transaction(function () use ($draft, $operatorName, $sanitizedFields, $overrideReason, $note) {
+                $draft->refresh();
+                $this->assertPendingReview($draft);
+
+                if ($sanitizedFields !== []) {
+                    $draft->fill($this->castOverrideFields($sanitizedFields));
+                    $draft->save();
+                }
+
+                return $this->applyDecision(
+                    draft: $draft,
+                    action: ApprovalAction::Overridden,
+                    operatorName: $operatorName,
+                    note: $note,
+                    nextStatus: TaskDraftStatus::Overridden,
+                    overrideFields: $sanitizedFields !== [] ? $sanitizedFields : null,
+                    overrideReason: $overrideReason,
+                );
+            });
+        } catch (OverrideRequiresReasonException|TaskDraftAlreadyProcessedException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            report($exception);
+
+            throw $exception;
+        }
     }
 
     /**
      * @param  array<string, mixed>|null  $overrideFields
      */
-    private function recordDecision(
+    private function applyDecision(
         TaskDraft $draft,
         ApprovalAction $action,
         string $operatorName,
@@ -97,29 +123,26 @@ class TaskDraftReviewService
         ?array $overrideFields,
         ?string $overrideReason,
     ): TaskDraft {
-        return DB::transaction(function () use ($draft, $action, $operatorName, $note, $nextStatus, $overrideFields, $overrideReason) {
-            $draft->refresh();
-            $this->assertPendingReview($draft);
+        $this->assertPendingReview($draft);
 
-            ApprovalDecision::query()->create([
-                'task_draft_id' => $draft->id,
-                'action' => $action,
-                'operator_name' => $operatorName,
-                'note' => $note,
-                'override_fields' => $overrideFields,
-                'override_reason' => $overrideReason,
-            ]);
+        ApprovalDecision::query()->create([
+            'task_draft_id' => $draft->id,
+            'action' => $action,
+            'operator_name' => $operatorName,
+            'note' => $note,
+            'override_fields' => $overrideFields,
+            'override_reason' => $overrideReason,
+        ]);
 
-            $draft->update(['status' => $nextStatus]);
+        $draft->update(['status' => $nextStatus]);
 
-            $this->auditLogger->log('task_draft', $draft->id, $action->value, $operatorName, [
-                'note' => $note,
-                'override_fields' => $overrideFields,
-                'override_reason' => $overrideReason,
-            ]);
+        $this->auditLogger->log('task_draft', $draft->id, $action->value, $operatorName, [
+            'note' => $note,
+            'override_fields' => $overrideFields,
+            'override_reason' => $overrideReason,
+        ]);
 
-            return $draft->fresh(['incomingEmail', 'aiEvaluation', 'approvalDecisions']);
-        });
+        return $draft->fresh(['incomingEmail', 'aiEvaluation', 'approvalDecisions']);
     }
 
     private function assertPendingReview(TaskDraft $draft): void

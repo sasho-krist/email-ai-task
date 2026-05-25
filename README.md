@@ -328,6 +328,71 @@ Deliberate scope cuts for a 2–3 hour exercise focused on **decisions**, not co
 
 ---
 
+## Tests
+
+Run the full suite:
+
+```bash
+php artisan test
+```
+
+Unit tests only:
+
+```bash
+php artisan test --testsuite=Unit
+```
+
+Tests use `AI_PROVIDER=mock` and an in-memory SQLite database (see `phpunit.xml`) — no OpenAI calls or MySQL required for CI/local test runs.
+
+### Latest test result
+
+```
+PASS  Tests\Unit\IncomingEmailServiceTest
+ ✓ it processes email into pending draft
+ ✓ it rejects duplicate emails
+ ✓ it marks email failed when content is too vague
+ ✓ it marks email failed when ai evaluation fails
+
+PASS  Tests\Unit\MockEmailToTaskEvaluatorTest
+ ✓ it classifies bug emails
+ ✓ it extracts project from body
+ ✓ it throws when email is too vague
+ ✓ it throws when ai failure is simulated
+
+PASS  Tests\Unit\OpenAiEmailToTaskEvaluatorTest
+ ✓ it requires api key
+ ✓ it maps openai json into task draft suggestion
+ ✓ it throws when openai flags email as too vague
+ ✓ it surfaces openai api errors
+
+PASS  Tests\Unit\TaskDraftReviewServiceTest
+ ✓ it approves a pending draft
+ ✓ it rejects a pending draft
+ ✓ it overrides fields when reason is provided
+ ✓ it requires override reason when fields change
+ ✓ it prevents second review action
+ ✓ it allows override without field changes
+
+PASS  Tests\Unit\TaskDraftSuggestionTest
+ ✓ it serializes to expected array shape
+
+PASS  Tests\Feature\EmailToTaskApiTest
+ ✓ incoming email creates task draft
+ ✓ duplicate email is rejected
+ ✓ vague email is rejected
+ ✓ ai failure is handled
+ ✓ review lifecycle
+ ✓ approve and reject flow
+
+PASS  Tests\Feature\ExampleTest
+ ✓ the application returns a successful response
+
+Tests:    26 passed (68 assertions)
+Duration: ~10s
+```
+
+---
+
 ## Example API session
 
 ```bash

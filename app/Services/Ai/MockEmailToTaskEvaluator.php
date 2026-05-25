@@ -10,6 +10,7 @@ use App\Enums\TaskType;
 use App\Exceptions\AiEvaluationFailedException;
 use App\Exceptions\EmailTooVagueException;
 use App\Models\IncomingEmail;
+use Throwable;
 
 class MockEmailToTaskEvaluator implements EmailToTaskEvaluator
 {
@@ -17,56 +18,65 @@ class MockEmailToTaskEvaluator implements EmailToTaskEvaluator
 
     public function evaluate(IncomingEmail $email): AiEvaluationResult
     {
-        $startedAt = microtime(true);
-        $combined = strtolower($email->subject.' '.$email->body);
+        try {
+            $startedAt = microtime(true);
+            $combined = strtolower($email->subject.' '.$email->body);
 
-        if (str_contains(strtolower($email->subject), '[ai_fail]')) {
-            throw new AiEvaluationFailedException('Simulated AI provider outage.');
+            if (str_contains(strtolower($email->subject), '[ai_fail]')) {
+                throw new AiEvaluationFailedException('Simulated AI provider outage.');
+            }
+
+            $normalizedBody = trim($email->body);
+            if (strlen($normalizedBody) < 15 || in_array($normalizedBody, ['???', 'help', 'see below'], true)) {
+                throw new EmailTooVagueException();
+            }
+
+            $type = $this->detectType($combined);
+            $priority = $this->detectPriority($combined, $type);
+            $missingInformation = $this->detectMissingInformation($email, $type);
+            $confidence = $this->calculateConfidence($email, $missingInformation);
+            $suggestedProject = $this->detectProject($email);
+            $suggestedTeam = $this->detectTeam($type, $suggestedProject);
+
+            $suggestion = new TaskDraftSuggestion(
+                type: $type,
+                title: $this->buildTitle($email, $type),
+                summary: $this->buildSummary($email, $type),
+                priority: $priority,
+                suggestedProject: $suggestedProject,
+                suggestedTeam: $suggestedTeam,
+                confidence: $confidence,
+                missingInformation: $missingInformation,
+                suggestedNextAction: $this->suggestNextAction($type, $missingInformation),
+            );
+
+            $rawRequest = [
+                'from' => $email->from,
+                'subject' => $email->subject,
+                'body' => $email->body,
+            ];
+
+            $rawResponse = [
+                'model' => 'mock-heuristic-v1',
+                'suggestion' => $suggestion->toArray(),
+            ];
+
+            return new AiEvaluationResult(
+                suggestion: $suggestion,
+                provider: 'mock',
+                promptVersion: self::PROMPT_VERSION,
+                rawRequest: $rawRequest,
+                rawResponse: $rawResponse,
+                processingTimeMs: (int) round((microtime(true) - $startedAt) * 1000),
+            );
+        } catch (EmailTooVagueException|AiEvaluationFailedException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new AiEvaluationFailedException(
+                'Mock evaluation failed: '.$exception->getMessage(),
+                previous: $exception,
+            );
         }
-
-        $normalizedBody = trim($email->body);
-        if (strlen($normalizedBody) < 15 || in_array($normalizedBody, ['???', 'help', 'see below'], true)) {
-            throw new EmailTooVagueException();
-        }
-
-        $type = $this->detectType($combined);
-        $priority = $this->detectPriority($combined, $type);
-        $missingInformation = $this->detectMissingInformation($email, $type);
-        $confidence = $this->calculateConfidence($email, $missingInformation);
-        $suggestedProject = $this->detectProject($email);
-        $suggestedTeam = $this->detectTeam($type, $suggestedProject);
-
-        $suggestion = new TaskDraftSuggestion(
-            type: $type,
-            title: $this->buildTitle($email, $type),
-            summary: $this->buildSummary($email, $type),
-            priority: $priority,
-            suggestedProject: $suggestedProject,
-            suggestedTeam: $suggestedTeam,
-            confidence: $confidence,
-            missingInformation: $missingInformation,
-            suggestedNextAction: $this->suggestNextAction($type, $missingInformation),
-        );
-
-        $rawRequest = [
-            'from' => $email->from,
-            'subject' => $email->subject,
-            'body' => $email->body,
-        ];
-
-        $rawResponse = [
-            'model' => 'mock-heuristic-v1',
-            'suggestion' => $suggestion->toArray(),
-        ];
-
-        return new AiEvaluationResult(
-            suggestion: $suggestion,
-            provider: 'mock',
-            promptVersion: self::PROMPT_VERSION,
-            rawRequest: $rawRequest,
-            rawResponse: $rawResponse,
-            processingTimeMs: (int) round((microtime(true) - $startedAt) * 1000),
-        );
     }
 
     private function detectType(string $combined): TaskType

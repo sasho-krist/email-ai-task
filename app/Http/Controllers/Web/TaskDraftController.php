@@ -2,8 +2,7 @@
 
 namespace App\Http\Controllers\Web;
 
-use App\Exceptions\OverrideRequiresReasonException;
-use App\Exceptions\TaskDraftAlreadyProcessedException;
+use App\Http\Controllers\Concerns\HandlesEmailToTaskExceptions;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\OverrideTaskDraftRequest;
 use App\Http\Requests\ReviewTaskDraftRequest;
@@ -14,56 +13,66 @@ use Illuminate\View\View;
 
 class TaskDraftController extends Controller
 {
+    use HandlesEmailToTaskExceptions;
+
     public function __construct(
         private readonly TaskDraftReviewService $reviewService,
     ) {}
 
-    public function show(TaskDraft $taskDraft): View
+    public function show(TaskDraft $taskDraft): View|RedirectResponse
     {
-        $taskDraft->load(['incomingEmail', 'aiEvaluation', 'approvalDecisions']);
+        try {
+            $taskDraft->load(['incomingEmail', 'aiEvaluation', 'approvalDecisions']);
 
-        return view('task-drafts.show', [
-            'draft' => $taskDraft,
-        ]);
+            return view('task-drafts.show', [
+                'draft' => $taskDraft,
+            ]);
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            return redirect()
+                ->route('dashboard')
+                ->with('error', 'Unable to load task draft.');
+        }
     }
 
     public function approve(TaskDraft $taskDraft, ReviewTaskDraftRequest $request): RedirectResponse
     {
-        try {
+        $result = $this->handleReviewAction(function () use ($taskDraft, $request) {
             $this->reviewService->approve(
                 $taskDraft,
                 $request->validated('operator_name'),
                 $request->validated('note'),
             );
-        } catch (TaskDraftAlreadyProcessedException $exception) {
-            return back()->with('error', $exception->getMessage());
-        }
 
-        return redirect()
-            ->route('task-drafts.show', $taskDraft)
-            ->with('success', 'Draft approved.');
+            return redirect()
+                ->route('task-drafts.show', $taskDraft)
+                ->with('success', 'Draft approved.');
+        });
+
+        return $result instanceof RedirectResponse ? $result : back()->with('error', 'Unexpected error.');
     }
 
     public function reject(TaskDraft $taskDraft, ReviewTaskDraftRequest $request): RedirectResponse
     {
-        try {
+        $result = $this->handleReviewAction(function () use ($taskDraft, $request) {
             $this->reviewService->reject(
                 $taskDraft,
                 $request->validated('operator_name'),
                 $request->validated('note'),
             );
-        } catch (TaskDraftAlreadyProcessedException $exception) {
-            return back()->with('error', $exception->getMessage());
-        }
 
-        return redirect()
-            ->route('task-drafts.show', $taskDraft)
-            ->with('success', 'Draft rejected.');
+            return redirect()
+                ->route('task-drafts.show', $taskDraft)
+                ->with('success', 'Draft rejected.');
+        });
+
+        return $result instanceof RedirectResponse ? $result : back()->with('error', 'Unexpected error.');
     }
 
     public function override(TaskDraft $taskDraft, OverrideTaskDraftRequest $request): RedirectResponse
     {
-        try {
+        $result = $this->handleReviewAction(function () use ($taskDraft, $request) {
             $this->reviewService->override(
                 $taskDraft,
                 $request->validated('operator_name'),
@@ -71,14 +80,12 @@ class TaskDraftController extends Controller
                 $request->validated('override_reason'),
                 $request->validated('note'),
             );
-        } catch (OverrideRequiresReasonException|TaskDraftAlreadyProcessedException $exception) {
-            return back()
-                ->withInput()
-                ->with('error', $exception->getMessage());
-        }
 
-        return redirect()
-            ->route('task-drafts.show', $taskDraft)
-            ->with('success', 'Draft overridden and saved.');
+            return redirect()
+                ->route('task-drafts.show', $taskDraft)
+                ->with('success', 'Draft overridden and saved.');
+        });
+
+        return $result instanceof RedirectResponse ? $result : back()->with('error', 'Unexpected error.');
     }
 }

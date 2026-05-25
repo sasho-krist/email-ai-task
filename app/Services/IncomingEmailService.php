@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\DTOs\AiEvaluationResult;
 use App\Contracts\EmailToTaskEvaluator;
 use App\Enums\AiEvaluationStatus;
 use App\Enums\IncomingEmailStatus;
@@ -13,6 +14,7 @@ use App\Models\AiEvaluation;
 use App\Models\IncomingEmail;
 use App\Models\TaskDraft;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 class IncomingEmailService
 {
@@ -26,13 +28,46 @@ class IncomingEmailService
      */
     public function process(array $payload): TaskDraft
     {
-        $contentHash = $this->buildContentHash($payload);
+        try {
+            $contentHash = $this->buildContentHash($payload);
 
-        $existing = IncomingEmail::query()->where('content_hash', $contentHash)->first();
-        if ($existing !== null) {
-            throw new DuplicateEmailException($existing->id);
+            $existing = IncomingEmail::query()->where('content_hash', $contentHash)->first();
+            if ($existing !== null) {
+                throw new DuplicateEmailException($existing->id);
+            }
+
+            $email = $this->createIncomingEmail($payload, $contentHash);
+
+            try {
+                $result = $this->evaluator->evaluate($email);
+            } catch (EmailTooVagueException|AiEvaluationFailedException $exception) {
+                $this->persistFailedEvaluation($email, $exception);
+                throw $exception;
+            } catch (Throwable $exception) {
+                $wrapped = new AiEvaluationFailedException(
+                    'Unexpected AI error: '.$exception->getMessage(),
+                    previous: $exception,
+                );
+                $this->persistFailedEvaluation($email, $wrapped);
+                throw $wrapped;
+            }
+
+            return $this->persistSuccessfulEvaluation($email, $result);
+        } catch (DuplicateEmailException|EmailTooVagueException|AiEvaluationFailedException $exception) {
+            throw $exception;
+        } catch (Throwable $exception) {
+            throw new AiEvaluationFailedException(
+                'Unexpected processing error: '.$exception->getMessage(),
+                previous: $exception,
+            );
         }
+    }
 
+    /**
+     * @param  array{from: string, subject: string, body: string}  $payload
+     */
+    private function createIncomingEmail(array $payload, string $contentHash): IncomingEmail
+    {
         return DB::transaction(function () use ($payload, $contentHash) {
             $email = IncomingEmail::query()->create([
                 'from' => $payload['from'],
@@ -47,34 +82,42 @@ class IncomingEmailService
                 'subject' => $email->subject,
             ]);
 
-            try {
-                $result = $this->evaluator->evaluate($email);
-            } catch (EmailTooVagueException|AiEvaluationFailedException $exception) {
-                $email->update([
-                    'status' => IncomingEmailStatus::Failed,
-                    'failure_reason' => $exception->getMessage(),
-                ]);
+            return $email;
+        });
+    }
 
-                AiEvaluation::query()->create([
-                    'incoming_email_id' => $email->id,
-                    'provider' => config('ai.provider'),
-                    'prompt_version' => $this->promptVersion(),
-                    'raw_request' => [
-                        'from' => $email->from,
-                        'subject' => $email->subject,
-                        'body' => $email->body,
-                    ],
-                    'status' => AiEvaluationStatus::Failed,
-                    'error_message' => $exception->getMessage(),
-                ]);
+    private function persistFailedEvaluation(
+        IncomingEmail $email,
+        EmailTooVagueException|AiEvaluationFailedException $exception,
+    ): void {
+        DB::transaction(function () use ($email, $exception) {
+            $email->update([
+                'status' => IncomingEmailStatus::Failed,
+                'failure_reason' => $exception->getMessage(),
+            ]);
 
-                $this->auditLogger->log('incoming_email', $email->id, 'ai_evaluation_failed', null, [
-                    'reason' => $exception->getMessage(),
-                ]);
+            AiEvaluation::query()->create([
+                'incoming_email_id' => $email->id,
+                'provider' => config('ai.provider'),
+                'prompt_version' => $this->promptVersion(),
+                'raw_request' => [
+                    'from' => $email->from,
+                    'subject' => $email->subject,
+                    'body' => $email->body,
+                ],
+                'status' => AiEvaluationStatus::Failed,
+                'error_message' => $exception->getMessage(),
+            ]);
 
-                throw $exception;
-            }
+            $this->auditLogger->log('incoming_email', $email->id, 'ai_evaluation_failed', null, [
+                'reason' => $exception->getMessage(),
+            ]);
+        });
+    }
 
+    private function persistSuccessfulEvaluation(IncomingEmail $email, AiEvaluationResult $result): TaskDraft
+    {
+        return DB::transaction(function () use ($email, $result) {
             $draft = TaskDraft::query()->create([
                 'incoming_email_id' => $email->id,
                 ...$result->suggestion->toArray(),

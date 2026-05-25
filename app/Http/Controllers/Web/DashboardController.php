@@ -10,11 +10,17 @@ class DashboardController extends Controller
 {
     public function index(): View
     {
-        $drafts = TaskDraft::query()
-            ->with('incomingEmail')
-            ->latest()
-            ->limit(20)
-            ->get();
+        try {
+            $drafts = TaskDraft::query()
+                ->with('incomingEmail')
+                ->latest()
+                ->limit(20)
+                ->get();
+        } catch (\Throwable $exception) {
+            report($exception);
+
+            $drafts = collect();
+        }
 
         return view('dashboard', [
             'drafts' => $drafts,
