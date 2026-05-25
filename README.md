@@ -6,6 +6,13 @@ The app exposes both a **web UI** (for operators) and a **JSON API** (for integr
 
 ---
 
+## Repository
+
+```bash
+git clone git@github.com:sasho-krist/email-ai-task.git
+cd email-ai-task
+```
+
 ## Quick start
 
 ```bash
